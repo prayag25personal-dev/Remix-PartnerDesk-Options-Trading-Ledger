@@ -22,31 +22,24 @@ import { DEFAULT_CHARGE_RATES } from '../shared/calculations.ts';
 import type {
   ChargeRates,
   DepositRecord,
+  GoogleSyncStatus,
   PartnerId,
   TradeGroupRecord,
 } from '../shared/types.ts';
 import {
   api,
-  setActiveSheetConfig,
   setAuthToken,
   subscribeSharedLedgerChanges,
   type AuthStatusResponse,
   type DashboardResponse,
-  type SharedSheetConfig,
 } from './lib/api.ts';
 import { exportLedgerToExcel } from './lib/exportExcel.ts';
-import {
-  googleSignOut,
-  initGoogleAuth,
-  subscribeGoogleAuth,
-} from './lib/googleWorkspace.ts';
+import { applyDarkTheme, getInitialDarkTheme } from './lib/theme.ts';
 import { AnalyticsView } from './components/AnalyticsView.tsx';
 import { DashboardView } from './components/DashboardView.tsx';
 import { FundsView } from './components/FundsView.tsx';
-import { GoogleSheetSetupView } from './components/GoogleSheetSetupView.tsx';
 import { LoginView } from './components/LoginView.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
-import { SheetConfirmModal } from './components/SheetConfirmModal.tsx';
 import { SunlitGalleryBackdrop } from './components/SunlitGalleryBackdrop.tsx';
 import { TradingHistoryView } from './components/TradingHistoryView.tsx';
 import { UploadTradeView } from './components/UploadTradeView.tsx';
@@ -65,7 +58,7 @@ const NAV_ITEMS: { id: NavTab; label: string; icon: React.ComponentType<{ classN
   { id: 'history', label: 'Trading History', icon: History },
   { id: 'analytics', label: 'Profit Analytics', icon: BarChart3 },
   { id: 'funds', label: 'Add / Withdraw Funds', icon: Wallet },
-  { id: 'settings', label: 'Google Sheet & Settings', icon: Settings },
+  { id: 'settings', label: 'Settings & Ledger', icon: Settings },
 ];
 
 export default function App() {
@@ -74,18 +67,22 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [moreSheetOpen, setMoreSheetOpen] = useState(false);
 
-  const [googleEmail, setGoogleEmail] = useState<string | null>(null);
-  const [hasGoogleToken, setHasGoogleToken] = useState(false);
-  const [sheetConfig, setSheetConfig] = useState<SharedSheetConfig | null>(null);
-  const [sheetConfigLoaded, setSheetConfigLoaded] = useState(false);
-  const [googleAuthNotice, setGoogleAuthNotice] = useState<string | null>(null);
-
+  const [syncStatus, setSyncStatus] = useState<GoogleSyncStatus | null>(null);
   const [dashboardData, setDashboardData] = useState<DashboardResponse | null>(null);
   const [trades, setTrades] = useState<TradeGroupRecord[]>([]);
   const [rates, setRates] = useState<ChargeRates>(DEFAULT_CHARGE_RATES);
   const [deposits, setDeposits] = useState<DepositRecord[]>([]);
   const [loadingData, setLoadingData] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [darkTheme, setDarkTheme] = useState<boolean>(() => getInitialDarkTheme());
+
+  const handleToggleDarkTheme = useCallback(() => {
+    setDarkTheme((prev) => {
+      const next = !prev;
+      applyDarkTheme(next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     api
@@ -96,82 +93,26 @@ export default function App() {
       });
   }, []);
 
-  useEffect(() => {
-    const stopAuth = initGoogleAuth();
-    const unsub = subscribeGoogleAuth(({ user, accessToken }) => {
-      setGoogleEmail(user?.email || null);
-      setHasGoogleToken(Boolean(accessToken));
-      if (accessToken) {
-        setGoogleAuthNotice(null);
-      }
-    });
-    return () => {
-      stopAuth();
-      unsub();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!partnerId) {
-      setSheetConfig(null);
-      setSheetConfigLoaded(false);
-      return;
-    }
-    let cancelled = false;
-    setSheetConfigLoaded(false);
-    api
-      .getSharedSheetConfig()
-      .then((cfg) => {
-        if (!cancelled) {
-          setSheetConfig(cfg);
-          setActiveSheetConfig(cfg);
-          setSheetConfigLoaded(true);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setSheetConfigLoaded(true);
-          setGlobalError(
-            err instanceof Error ? err.message : 'Unable to check shared Google Sheet configuration.',
-          );
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [partnerId]);
-
   const refreshAll = useCallback(
     async (opts?: { silent?: boolean }) => {
-      if (!partnerId || !hasGoogleToken || !sheetConfig?.spreadsheetId) return;
+      if (!partnerId) return;
       if (!opts?.silent) setLoadingData(true);
       if (!opts?.silent) setGlobalError(null);
       try {
-        const latestCfg = await api.getSharedSheetConfig();
-        if (latestCfg?.spreadsheetId !== sheetConfig.spreadsheetId) {
-          setSheetConfig(latestCfg);
-          setActiveSheetConfig(latestCfg);
-          if (!latestCfg) return;
-        }
-        const [dash, tr, dep] = await Promise.all([
+        const [dash, tr, dep, sync] = await Promise.all([
           api.getDashboard(),
           api.listTrades(),
           api.listDeposits(),
+          api.getSyncStatus().catch(() => null),
         ]);
         setDashboardData(dash);
         setTrades(tr.trades);
         setRates(tr.rates);
         setDeposits(dep.deposits);
+        if (sync) setSyncStatus(sync.status);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Failed to load shared Google Sheet.';
+        const msg = err instanceof Error ? err.message : 'Failed to load shared ledger.';
         if (
-          msg.startsWith('GOOGLE_AUTH_REQUIRED') ||
-          msg.startsWith('GOOGLE_AUTH_EXPIRED')
-        ) {
-          setGoogleAuthNotice(
-            msg.replace(/^GOOGLE_AUTH_(REQUIRED|EXPIRED):\s*/, ''),
-          );
-        } else if (
           msg.toLowerCase().includes('session expired') ||
           msg.toLowerCase().includes('authentication required')
         ) {
@@ -184,17 +125,17 @@ export default function App() {
         if (!opts?.silent) setLoadingData(false);
       }
     },
-    [partnerId, hasGoogleToken, sheetConfig],
+    [partnerId],
   );
 
   useEffect(() => {
-    if (!partnerId || !hasGoogleToken || !sheetConfig?.spreadsheetId) return;
+    if (!partnerId) return;
     void refreshAll();
-  }, [partnerId, hasGoogleToken, sheetConfig?.spreadsheetId, refreshAll]);
+  }, [partnerId, refreshAll]);
 
   // Auto-sync across Prayag & Raj's devices/tabs on focus, cross-tab message, or every 10s
   useEffect(() => {
-    if (!partnerId || !hasGoogleToken || !sheetConfig?.spreadsheetId) return;
+    if (!partnerId) return;
     const onFocusOrVisible = () => {
       if (document.visibilityState === 'visible') {
         void refreshAll({ silent: true });
@@ -216,7 +157,7 @@ export default function App() {
       unsubscribeSync();
       clearInterval(intervalId);
     };
-  }, [partnerId, hasGoogleToken, sheetConfig?.spreadsheetId, refreshAll]);
+  }, [partnerId, refreshAll]);
 
   const handleAuthenticated = (token: string, id: PartnerId) => {
     setAuthToken(token, id);
@@ -225,13 +166,9 @@ export default function App() {
   };
 
   const handleSignOut = () => {
-    void googleSignOut();
     setAuthToken(null, null);
-    setActiveSheetConfig(null);
     setPartnerId(null);
-    setSheetConfig(null);
-    setSheetConfigLoaded(false);
-    setGoogleAuthNotice(null);
+    setSyncStatus(null);
     setMoreSheetOpen(false);
     setDashboardData(null);
     setTrades([]);
@@ -298,35 +235,6 @@ export default function App() {
       );
     }
 
-    if (!sheetConfigLoaded) {
-      return (
-        <div className="relative min-h-screen flex items-center justify-center p-6 text-sm text-slate-600">
-          <SunlitGalleryBackdrop />
-          <div className="gallery-card rounded-full px-5 py-2.5 text-xs font-medium text-[#111318]">
-            Checking shared Google Sheet link...
-          </div>
-        </div>
-      );
-    }
-
-    if (!hasGoogleToken || !sheetConfig) {
-      return (
-        <GoogleSheetSetupView
-          partnerId={partnerId}
-          googleEmail={googleEmail}
-          hasGoogleToken={hasGoogleToken}
-          existingServerConfig={sheetConfig}
-          authNotice={googleAuthNotice}
-          onReady={(cfg) => {
-            setSheetConfig(cfg);
-            setActiveSheetConfig(cfg);
-            setGoogleAuthNotice(null);
-          }}
-          onSignOutPartner={handleSignOut}
-        />
-      );
-    }
-
     const currentNav = NAV_ITEMS.find((n) => n.id === activeTab)!;
 
     return (
@@ -373,7 +281,7 @@ export default function App() {
           </nav>
 
           <div className="p-4 border-t border-slate-900/8 space-y-3">
-            <div className="w-full text-left px-3.5 py-2.5 bg-white/75 border border-slate-900/8 rounded-2xl space-y-1.5">
+            <div className="w-full text-left px-3.5 py-2.5 bg-white/75 border border-slate-900/8 rounded-2xl space-y-1">
               <button
                 type="button"
                 onClick={() => navigateTo('settings')}
@@ -381,24 +289,32 @@ export default function App() {
               >
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700">
                   <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
-                  <span>Synced via Google Sheets</span>
+                  <span>
+                    {syncStatus?.configured
+                      ? syncStatus.pendingSync
+                        ? 'Google Sheet Syncing...'
+                        : 'Google Sheet Synced'
+                      : 'Shared Cloud Ledger'}
+                  </span>
                 </div>
                 <div className="mt-0.5 text-[11px] text-slate-600 font-medium truncate">
-                  {sheetConfig.spreadsheetTitle}
+                  {syncStatus?.spreadsheetTitle || 'Prayag & Raj · Live Data'}
                 </div>
                 <div className="mt-0.5 text-[11px] text-slate-500 font-mono tabular-nums">
                   {trades.length} trades · {deposits.length} entries
                 </div>
               </button>
-              <a
-                href={sheetConfig.spreadsheetUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#9F771B] hover:text-[#111318]"
-              >
-                <span>Open Google Sheet</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
+              {syncStatus?.spreadsheetUrl && (
+                <a
+                  href={syncStatus.spreadsheetUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#9F771B] hover:text-[#111318]"
+                >
+                  <span>Open Google Sheet</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
             </div>
 
             <div className="px-3.5 py-2.5 bg-slate-900/[0.03] border border-slate-900/8 rounded-2xl">
@@ -407,9 +323,6 @@ export default function App() {
                 <UserCheck className="w-4 h-4 text-[#C89D3C]" />
                 <span>{partnerId}</span>
               </div>
-              {googleEmail && (
-                <div className="mt-0.5 text-[11px] text-slate-500 truncate">{googleEmail}</div>
-              )}
             </div>
 
             <button
@@ -425,28 +338,24 @@ export default function App() {
 
         {/* Main Content Area */}
         <div className="flex-1 min-w-0 flex flex-col">
-          {/* Compact Frosted Header */}
-          <header className="h-14 lg:h-16 bg-white/94 lg:bg-white/85 lg:backdrop-blur-md border-b border-slate-900/8 px-4 sm:px-8 flex items-center justify-between gap-3 sticky top-0 z-20">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <span className="lg:hidden font-display text-sm font-bold text-[#111318] shrink-0">
-                PartnerDesk
-              </span>
-              <span className="lg:hidden text-slate-300">/</span>
-              <h1 className="font-display text-sm sm:text-lg font-bold text-[#111318] truncate">
+          {/* Compact Dark Gallery Header */}
+          <header className="h-14 lg:h-16 bg-linear-[145deg,#171a21_0%,#101217_100%] border-b border-white/10 text-white px-4 sm:px-8 flex items-center justify-between gap-3 sticky top-0 z-20 shadow-[0_14px_32px_-20px_rgba(10,12,16,0.45)]">
+            <div className="flex items-center min-w-0">
+              <h1 className="font-display text-sm sm:text-lg font-bold text-white truncate">
                 {currentNav.label}
               </h1>
             </div>
 
             {/* Mobile Quick Action Strip */}
             <div className="flex lg:hidden items-center gap-2 shrink-0">
-              <span className="text-xs font-semibold text-[#111318] bg-white/85 border border-slate-900/10 px-2.5 py-1.5 rounded-full">
+              <span className="text-xs font-semibold text-[#E6B949] bg-white/10 border border-white/15 px-2.5 py-1.5 rounded-full">
                 {partnerId}
               </span>
               <button
                 type="button"
                 onClick={handleExportExcel}
                 aria-label="Download Excel"
-                className="min-w-[44px] min-h-[40px] inline-flex items-center justify-center gap-1 px-3 text-xs font-semibold text-[#111318] bg-white/90 hover:bg-white border border-slate-900/12 rounded-full cursor-pointer shadow-2xs"
+                className="min-w-[44px] min-h-[40px] inline-flex items-center justify-center gap-1 px-3 text-xs font-semibold text-white bg-white/10 hover:bg-white/18 border border-white/15 rounded-full cursor-pointer shadow-2xs transition-colors"
               >
                 <Download className="w-4 h-4" />
                 <span>.xlsx</span>
@@ -458,7 +367,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleExportExcel}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-[#111318] bg-white/80 hover:bg-white border border-slate-900/12 rounded-full cursor-pointer whitespace-nowrap transition-colors"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-white/10 hover:bg-white/18 border border-white/15 rounded-full cursor-pointer whitespace-nowrap transition-colors"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Download Excel</span>
@@ -466,20 +375,20 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void refreshAll()}
-                aria-label="Refresh shared Google Sheet"
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-600 hover:text-[#111318] bg-white/60 hover:bg-white border border-slate-900/10 rounded-full cursor-pointer whitespace-nowrap transition-colors"
+                aria-label="Refresh shared ledger"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-200 hover:text-white bg-white/8 hover:bg-white/15 border border-white/12 rounded-full cursor-pointer whitespace-nowrap transition-colors"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${loadingData ? 'animate-spin' : ''}`} />
-                <span>Sync Sheet</span>
+                <span>Refresh</span>
               </button>
               {activeTab !== 'upload' && (
                 <motion.button
                   whileTap={{ scale: 0.97 }}
                   type="button"
                   onClick={() => navigateTo('upload')}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#111318] hover:bg-[#242934] rounded-full cursor-pointer whitespace-nowrap shrink-0 shadow-sm"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-[#111318] bg-[#E6B949] hover:bg-[#eec863] rounded-full cursor-pointer whitespace-nowrap shrink-0 shadow-sm transition-colors"
                 >
-                  <Upload className="w-3.5 h-3.5 text-[#E6B949]" />
+                  <Upload className="w-3.5 h-3.5 text-[#111318]" />
                   <span>Upload Screenshot</span>
                 </motion.button>
               )}
@@ -542,8 +451,9 @@ export default function App() {
               {activeTab === 'settings' && (
                 <SettingsView
                   partnerId={partnerId}
-                  googleEmail={googleEmail}
-                  sheetConfig={sheetConfig}
+                  darkTheme={darkTheme}
+                  onToggleDarkTheme={handleToggleDarkTheme}
+                  syncStatus={syncStatus}
                   rates={rates}
                   envPasswordConfigured={
                     partnerId === 'Prayag'
@@ -554,11 +464,7 @@ export default function App() {
                     setRates(newRates);
                     void refreshAll();
                   }}
-                  onSheetConfigChanged={(cfg) => {
-                    setSheetConfig(cfg);
-                    setActiveSheetConfig(cfg);
-                    if (cfg) void refreshAll();
-                  }}
+                  onSyncStatusUpdated={setSyncStatus}
                   onStorageChanged={() => void refreshAll()}
                   onExportExcel={handleExportExcel}
                 />
@@ -658,9 +564,13 @@ export default function App() {
                     <div className="text-sm font-bold text-[#111318]">
                       Signed in as {partnerId}
                     </div>
-                    <div className="text-xs text-emerald-700 font-medium flex items-center gap-1 mt-0.5">
+                    <div className="text-xs font-medium flex items-center gap-1 mt-0.5 text-emerald-700">
                       <FileSpreadsheet className="w-3.5 h-3.5" />
-                      <span>Shared Google Sheet · Prayag & Raj</span>
+                      <span>
+                        {syncStatus?.configured
+                          ? 'Auto-Synced Google Sheet · Prayag & Raj'
+                          : 'Shared Cloud Ledger · Prayag & Raj'}
+                      </span>
                     </div>
                   </div>
                   <button
@@ -705,18 +615,20 @@ export default function App() {
                         activeTab === 'settings' ? 'text-[#E6B949]' : 'text-slate-600'
                       }`}
                     />
-                    <span>Google Sheet & Settings</span>
+                    <span>Settings & Ledger</span>
                   </button>
 
-                  <a
-                    href={sheetConfig.spreadsheetUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full min-h-[48px] px-4 flex items-center gap-3 rounded-2xl text-sm font-medium bg-slate-900/[0.04] text-[#111318] hover:bg-slate-900/[0.08]"
-                  >
-                    <ExternalLink className="w-4 h-4 text-[#C89D3C]" />
-                    <span>Open Google Sheet</span>
-                  </a>
+                  {syncStatus?.spreadsheetUrl && (
+                    <a
+                      href={syncStatus.spreadsheetUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full min-h-[48px] px-4 flex items-center gap-3 rounded-2xl text-sm font-medium bg-slate-900/[0.04] text-[#111318] hover:bg-slate-900/[0.08]"
+                    >
+                      <ExternalLink className="w-4 h-4 text-[#C89D3C]" />
+                      <span>Open Google Sheet</span>
+                    </a>
+                  )}
 
                   <button
                     type="button"
@@ -739,7 +651,7 @@ export default function App() {
                     className="w-full min-h-[48px] px-4 flex items-center gap-3 rounded-2xl text-sm font-medium bg-slate-900/[0.04] text-[#111318] hover:bg-slate-900/[0.08] cursor-pointer"
                   >
                     <RefreshCw className="w-4 h-4 text-slate-600" />
-                    <span>Sync Google Sheet</span>
+                    <span>Refresh Ledger</span>
                   </button>
 
                   <button
@@ -759,10 +671,5 @@ export default function App() {
     );
   };
 
-  return (
-    <>
-      {renderContent()}
-      <SheetConfirmModal />
-    </>
-  );
+  return renderContent();
 }

@@ -9,7 +9,6 @@ import type {
 } from '../../shared/types.ts';
 import { api } from '../lib/api.ts';
 import { formatDateShort, formatINR, todayIsoDate } from '../lib/format.ts';
-import { isSheetActionCancelled } from '../lib/sheetConfirm.ts';
 
 interface FundsViewProps {
   deposits: DepositRecord[];
@@ -66,9 +65,7 @@ export const FundsView: React.FC<FundsViewProps> = ({ deposits, summary, onChang
       );
       onChanged();
     } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setError(err instanceof Error ? err.message : 'Failed to save fund entry.');
-      }
+      setError(err instanceof Error ? err.message : 'Failed to save fund entry.');
     } finally {
       setSaving(false);
     }
@@ -81,9 +78,7 @@ export const FundsView: React.FC<FundsViewProps> = ({ deposits, summary, onChang
       await api.deleteDeposit(d.id, label);
       onChanged();
     } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setError(err instanceof Error ? err.message : 'Failed to delete entry.');
-      }
+      setError(err instanceof Error ? err.message : 'Failed to delete entry.');
     }
   };
 

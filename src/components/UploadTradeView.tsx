@@ -25,7 +25,6 @@ import type {
 } from '../../shared/types.ts';
 import { api } from '../lib/api.ts';
 import { formatDateShort, formatINR, todayIsoDate } from '../lib/format.ts';
-import { isSheetActionCancelled } from '../lib/sheetConfirm.ts';
 
 interface UploadTradeViewProps {
   rates: ChargeRates;
@@ -311,9 +310,7 @@ export const UploadTradeView: React.FC<UploadTradeViewProps> = ({
       setOcrNotes('');
       onSaved();
     } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setError(err instanceof Error ? err.message : 'Failed to save trade.');
-      }
+      setError(err instanceof Error ? err.message : 'Failed to save trade.');
     } finally {
       setSaving(false);
     }
@@ -330,7 +327,7 @@ export const UploadTradeView: React.FC<UploadTradeViewProps> = ({
                 Upload Angel One Order Book / Trade Book Screenshot
               </h2>
               <p className="text-xs text-slate-500 mt-1">
-                Upload a screenshot or tap Add Manual Order. Everything saves directly to your shared Google Sheet.
+                Upload a screenshot or tap Add Manual Order. Everything saves centrally and syncs automatically for Prayag and Raj.
               </p>
             </div>
             <button
@@ -883,7 +880,7 @@ export const UploadTradeView: React.FC<UploadTradeViewProps> = ({
 
           <div className="px-4 sm:px-6 py-4 border-t border-slate-900/8 bg-white/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <span className="text-xs text-slate-500">
-              Saved directly to your shared Google Sheet · Estimated charges can be reconciled later with a Contract Note.
+              Saved centrally for both Prayag & Raj · Estimated charges can be reconciled later with a Contract Note.
             </span>
             <div className="flex items-center gap-3 w-full sm:w-auto">
               <button
@@ -905,7 +902,7 @@ export const UploadTradeView: React.FC<UploadTradeViewProps> = ({
                 onClick={handleSave}
                 className="flex-1 sm:flex-initial min-h-[46px] sm:min-h-[40px] px-5 py-2 text-xs font-semibold text-white bg-[#111318] hover:bg-[#242934] disabled:bg-slate-400 rounded-full cursor-pointer shadow-sm"
               >
-                {saving ? 'Saving to Google Sheet...' : 'Confirm & Save Trade'}
+                {saving ? 'Saving Trade...' : 'Confirm & Save Trade'}
               </motion.button>
             </div>
           </div>

@@ -6,26 +6,32 @@ import {
   ExternalLink,
   FileSpreadsheet,
   KeyRound,
+  Moon,
+  RefreshCw,
   RotateCcw,
-  Share2,
   Sliders,
-  Unlink,
+  Sun,
   Upload,
 } from 'lucide-react';
 import { DEFAULT_CHARGE_RATES } from '../../shared/calculations.ts';
-import type { AuditLogRecord, ChargeRates, PartnerId } from '../../shared/types.ts';
-import { api, type SharedSheetConfig } from '../lib/api.ts';
+import type {
+  AuditLogRecord,
+  ChargeRates,
+  GoogleSyncStatus,
+  PartnerId,
+} from '../../shared/types.ts';
+import { api } from '../lib/api.ts';
 import { formatDateTime } from '../lib/format.ts';
-import { isSheetActionCancelled } from '../lib/sheetConfirm.ts';
 
 interface SettingsViewProps {
   partnerId: PartnerId;
-  googleEmail: string | null;
-  sheetConfig: SharedSheetConfig;
+  darkTheme: boolean;
+  onToggleDarkTheme: () => void;
+  syncStatus: GoogleSyncStatus | null;
   rates: ChargeRates;
   envPasswordConfigured: boolean;
   onRatesUpdated: (rates: ChargeRates) => void;
-  onSheetConfigChanged: (config: SharedSheetConfig | null) => void;
+  onSyncStatusUpdated: (status: GoogleSyncStatus) => void;
   onStorageChanged: () => void;
   onExportExcel: () => void;
 }
@@ -50,12 +56,13 @@ function ratesToInputs(r: ChargeRates): Record<keyof ChargeRates, string> {
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   partnerId,
-  googleEmail,
-  sheetConfig,
+  darkTheme,
+  onToggleDarkTheme,
+  syncStatus,
   rates,
   envPasswordConfigured,
   onRatesUpdated,
-  onSheetConfigChanged,
+  onSyncStatusUpdated,
   onStorageChanged,
   onExportExcel,
 }) => {
@@ -67,11 +74,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     screenshots: number;
     deposits: number;
   } | null>(null);
-  const [partnerEmail, setPartnerEmail] = useState('');
-  const [sharing, setSharing] = useState(false);
-  const [sheetMsg, setSheetMsg] = useState<string | null>(null);
-  const [sheetErr, setSheetErr] = useState<string | null>(null);
+  const [syncingNow, setSyncingNow] = useState(false);
   const [workingBackup, setWorkingBackup] = useState(false);
+  const [ledgerMsg, setLedgerMsg] = useState<string | null>(null);
+  const [ledgerErr, setLedgerErr] = useState<string | null>(null);
 
   const [rateInputs, setRateInputs] = useState<Record<keyof ChargeRates, string>>(() =>
     ratesToInputs(rates),
@@ -81,6 +87,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [ratesMsg, setRatesMsg] = useState<string | null>(null);
   const [ratesErr, setRatesErr] = useState<string | null>(null);
 
+  const [editingPassword, setEditingPassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -89,7 +96,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [pwdErr, setPwdErr] = useState<string | null>(null);
 
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
-  const [loadingLogs, setLoadingLogs] = useState(true);
+  const [loadingLogs, setLoadingLogs] = useState(false);
 
   useEffect(() => {
     setRateInputs(ratesToInputs(rates));
@@ -98,9 +105,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const loadStatusAndLogs = useCallback(async () => {
     setLoadingLogs(true);
     try {
-      const [backup, logsRes] = await Promise.all([
+      const [backup, logsRes, syncRes] = await Promise.all([
         api.getBackupPayload(),
         api.listAuditLogs(),
+        api.getSyncStatus().catch(() => null),
       ]);
       setCounts({
         trades: backup.tradeGroups.length,
@@ -109,70 +117,56 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         deposits: backup.deposits.length,
       });
       setAuditLogs(logsRes.logs);
+      if (syncRes?.status) {
+        onSyncStatusUpdated(syncRes.status);
+      }
     } catch (err) {
-      setSheetErr(err instanceof Error ? err.message : 'Unable to read Google Sheet details.');
+      setLedgerErr(err instanceof Error ? err.message : 'Unable to load shared ledger details.');
     } finally {
       setLoadingLogs(false);
     }
-  }, []);
+  }, [onSyncStatusUpdated]);
 
   useEffect(() => {
     void loadStatusAndLogs();
   }, [loadStatusAndLogs]);
 
-  const handleShareSheet = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSheetMsg(null);
-    setSheetErr(null);
-    if (!partnerEmail.trim()) {
-      setSheetErr('Enter your partner Gmail address to grant Editor access.');
-      return;
-    }
-    setSharing(true);
+  const handleSyncNow = async () => {
+    setLedgerMsg(null);
+    setLedgerErr(null);
+    setSyncingNow(true);
     try {
-      await api.shareActiveSheetWithPartner(partnerEmail.trim());
-      setSheetMsg(
-        `Shared "${sheetConfig.spreadsheetTitle}" as Editor with ${partnerEmail.trim()}. Ask them to sign in with Google on PartnerDesk to edit the exact same live spreadsheet.`,
-      );
-      setPartnerEmail('');
-    } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setSheetErr(err instanceof Error ? err.message : 'Could not share Google Sheet.');
+      const res = await api.triggerSyncNow();
+      onSyncStatusUpdated(res.status);
+      if (res.status.lastError) {
+        setLedgerErr(res.status.lastError);
+      } else if (res.status.configured) {
+        setLedgerMsg('Master Google Sheet synced with the latest shared cloud data.');
+      } else {
+        setLedgerMsg('Shared cloud ledger is up to date.');
       }
-    } finally {
-      setSharing(false);
-    }
-  };
-
-  const handleDisconnectSheet = async () => {
-    setSheetMsg(null);
-    setSheetErr(null);
-    setWorkingBackup(true);
-    try {
-      await api.clearSharedSheetConfig();
-      onSheetConfigChanged(null);
     } catch (err) {
-      setSheetErr(err instanceof Error ? err.message : 'Failed to unlink spreadsheet.');
+      setLedgerErr(err instanceof Error ? err.message : 'Failed to sync Google Sheet.');
     } finally {
-      setWorkingBackup(false);
+      setSyncingNow(false);
     }
   };
 
   const handleDownloadBackup = async () => {
-    setSheetMsg(null);
-    setSheetErr(null);
+    setLedgerMsg(null);
+    setLedgerErr(null);
     try {
       const payload = await api.getBackupPayload();
       api.downloadBackupJson(payload);
-      setSheetMsg('Downloaded PartnerDesk JSON backup from the shared Google Sheet.');
+      setLedgerMsg('Downloaded PartnerDesk JSON backup from the shared cloud ledger.');
     } catch (err) {
-      setSheetErr(err instanceof Error ? err.message : 'Failed to export backup.');
+      setLedgerErr(err instanceof Error ? err.message : 'Failed to export backup.');
     }
   };
 
   const handleRestoreBackupFile = async (file: File) => {
-    setSheetMsg(null);
-    setSheetErr(null);
+    setLedgerMsg(null);
+    setLedgerErr(null);
     setWorkingBackup(true);
     try {
       const text = await file.text();
@@ -186,15 +180,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         throw new Error('Selected file is not a valid PartnerDesk backup.');
       }
       const res = await api.mergeBackupPayload(parsed);
-      setSheetMsg(
-        `Merged backup into shared Google Sheet for both Prayag & Raj: +${res.addedTrades} trade(s), +${res.addedDeposits} deposit(s), +${res.addedScreenshots} screenshot(s).`,
+      setLedgerMsg(
+        `Merged backup into shared ledger for both Prayag & Raj: +${res.addedTrades} trade(s), +${res.addedDeposits} deposit(s), +${res.addedScreenshots} screenshot(s).`,
       );
       onStorageChanged();
       await loadStatusAndLogs();
     } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setSheetErr(err instanceof Error ? err.message : 'Failed to import backup.');
-      }
+      setLedgerErr(err instanceof Error ? err.message : 'Failed to import backup.');
     } finally {
       setWorkingBackup(false);
     }
@@ -228,12 +220,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       });
       onRatesUpdated(res.rates);
       setRateInputs(ratesToInputs(res.rates));
-      setRatesMsg('Charge rates updated in Google Sheet for both Prayag & Raj.');
+      setRatesMsg('Charge rates updated in shared ledger for both Prayag & Raj.');
       void loadStatusAndLogs();
     } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setRatesErr(err instanceof Error ? err.message : 'Failed to update rates.');
-      }
+      setRatesErr(err instanceof Error ? err.message : 'Failed to update rates.');
     } finally {
       setSavingRates(false);
     }
@@ -257,8 +247,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
+      setEditingPassword(false);
       setPwdMsg(
-        `Login password updated for ${partnerId}. Both accounts continue sharing the exact same Google Sheet ledger.`,
+        `Login password updated for ${partnerId}. Both accounts continue sharing the exact same cloud ledger.`,
       );
       void loadStatusAndLogs();
     } catch (err) {
@@ -270,7 +261,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Shared Google Sheet Storage & Collaboration Panel */}
+      {/* Appearance — Dark Theme Button */}
+      <motion.section
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        className="gallery-card rounded-3xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3"
+      >
+        <div>
+          <h2 className="font-display text-sm sm:text-base font-bold text-[#111318]">
+            Appearance
+          </h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {darkTheme ? 'Dark theme enabled' : 'Light theme enabled'}
+          </p>
+        </div>
+        <motion.button
+          whileTap={{ scale: 0.98 }}
+          type="button"
+          onClick={onToggleDarkTheme}
+          aria-pressed={darkTheme}
+          className="min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[#111318] hover:bg-[#242934] text-white text-xs font-semibold rounded-full cursor-pointer shadow-xs transition-colors"
+        >
+          {darkTheme ? (
+            <Sun className="w-4 h-4 text-[#E6B949]" />
+          ) : (
+            <Moon className="w-4 h-4 text-[#E6B949]" />
+          )}
+          <span>{darkTheme ? 'Switch to Light Theme' : 'Dark Theme'}</span>
+        </motion.button>
+      </motion.section>
+
+      {/* Shared Cloud Ledger & Automatic Google Sheet Sync Status */}
       <motion.section
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -283,22 +305,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <span className="w-7 h-7 rounded-xl bg-[#111318] text-[#E6B949] flex items-center justify-center shrink-0">
                 <FileSpreadsheet className="w-3.5 h-3.5" />
               </span>
-              <span>Shared Google Sheet Storage (Live Partnership Workbook)</span>
+              <span>Shared Partnership Cloud & Google Sheet Sync</span>
             </h2>
             <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-              Every trade, screenshot, deposit, withdrawal, and charge rate is saved directly to{' '}
-              <span className="font-semibold text-[#111318]">{sheetConfig.spreadsheetTitle}</span>{' '}
-              in Google Sheets. Both Prayag and Raj read and update the exact same spreadsheet from
-              any device.
+              Every trade, screenshot, deposit, withdrawal, and edit is saved centrally for both
+              Prayag and Raj and automatically mirrored to your master Google Sheet in the
+              background.
             </p>
           </div>
           <span className="self-start inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-600/20 text-xs font-semibold text-emerald-800 whitespace-nowrap">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-            <span>Live Google Sheet Sync</span>
+            <span>
+              {syncStatus?.configured
+                ? syncStatus.pendingSync
+                  ? 'Google Sheet Syncing...'
+                  : 'Live Google Sheet Sync'
+                : 'Shared Cloud Active'}
+            </span>
           </span>
         </div>
 
-        {/* Sheet Metrics & Info Strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
           <div className="gallery-card-dark rounded-2xl p-3.5 text-white">
             <div className="text-slate-300">Saved Trades</div>
@@ -306,87 +332,96 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {counts ? counts.trades : '—'}
             </div>
             <div className="text-[11px] text-[#E6B949] font-mono tabular-nums">
-              {counts ? `${counts.orders} order legs` : 'Synced'}
+              {counts ? `${counts.orders} order legs` : 'Shared ledger'}
             </div>
           </div>
 
           <div className="bg-slate-900/[0.03] border border-slate-900/10 rounded-2xl p-3.5">
-            <div className="text-slate-500">Screenshots & Deposits</div>
+            <div className="text-slate-500">Screenshots & Funds</div>
             <div className="mt-1 text-lg font-bold font-mono tabular-nums text-[#111318]">
               {counts ? `${counts.screenshots} / ${counts.deposits}` : '—'}
             </div>
-            <div className="text-[11px] text-slate-500">Stored in Sheet tabs</div>
+            <div className="text-[11px] text-slate-500">
+              {syncStatus?.configured ? 'Synced with Drive & Sheet' : 'Stored in cloud DB'}
+            </div>
           </div>
 
           <div className="bg-slate-900/[0.03] border border-slate-900/10 rounded-2xl p-3.5">
-            <div className="text-slate-500">Linked Google Account</div>
+            <div className="text-slate-500">Master Workbook</div>
             <div className="mt-1 text-sm font-semibold text-[#111318] truncate">
-              {googleEmail || 'Connected'}
+              {syncStatus?.spreadsheetTitle ||
+                (syncStatus?.configured ? 'Connected Google Sheet' : 'PartnerDesk Cloud')}
             </div>
             <div className="text-[11px] text-slate-500 truncate">
-              Linked by {sheetConfig.linkedBy}
+              {syncStatus?.lastSyncedAt
+                ? `Synced ${formatDateTime(syncStatus.lastSyncedAt)}`
+                : 'Prayag & Raj live access'}
             </div>
           </div>
 
           <div className="bg-slate-900/[0.03] border border-slate-900/10 rounded-2xl p-3.5 flex flex-col justify-between">
             <div>
-              <div className="text-slate-500">Spreadsheet ID</div>
-              <div className="mt-1 text-xs font-mono text-[#111318] truncate">
-                {sheetConfig.spreadsheetId}
+              <div className="text-slate-500">Background Sync</div>
+              <div className="mt-1 text-xs font-semibold text-[#111318]">
+                {syncStatus?.configured
+                  ? syncStatus.lastError
+                    ? 'Queued for retry'
+                    : 'Server-Authorized'
+                  : 'Local Server Storage'}
               </div>
             </div>
-            <a
-              href={sheetConfig.spreadsheetUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-[#9F771B] hover:text-[#111318]"
-            >
-              <span>Open in Google Sheets</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
+            {syncStatus?.spreadsheetUrl ? (
+              <a
+                href={syncStatus.spreadsheetUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-[#9F771B] hover:text-[#111318]"
+              >
+                <span>Open Google Sheet</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            ) : (
+              <span className="mt-1 text-[11px] text-slate-500">No Google login needed</span>
+            )}
           </div>
         </div>
 
-        {/* Share with Partner Gmail */}
-        <form
-          onSubmit={handleShareSheet}
-          className="p-4 rounded-2xl bg-slate-900/[0.03] border border-slate-900/10 flex flex-col sm:flex-row sm:items-end gap-3"
-        >
-          <div className="flex-1">
-            <label htmlFor="partner-share-email" className="block text-xs font-semibold text-[#111318] mb-1">
-              Share Editor Access with {partnerId === 'Prayag' ? 'Raj' : 'Prayag'} (Gmail)
-            </label>
-            <input
-              id="partner-share-email"
-              type="email"
-              value={partnerEmail}
-              onChange={(e) => setPartnerEmail(e.target.value)}
-              placeholder={partnerId === 'Prayag' ? 'raj@gmail.com' : 'prayag@gmail.com'}
-              className="w-full h-11 px-3.5 py-2 text-xs bg-white border border-slate-900/15 rounded-2xl text-[#111318] focus:outline-none focus:border-[#111318]"
-            />
-          </div>
-          <motion.button
-            whileTap={{ scale: 0.98 }}
-            type="submit"
-            disabled={sharing}
-            className="min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[#111318] hover:bg-[#242934] disabled:bg-slate-400 text-white text-xs font-semibold rounded-full cursor-pointer whitespace-nowrap shadow-xs"
-          >
-            <Share2 className="w-4 h-4 text-[#E6B949]" />
-            <span>{sharing ? 'Sharing...' : 'Share Sheet Access'}</span>
-          </motion.button>
-        </form>
-
         {/* Action Buttons */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <a
-            href={sheetConfig.spreadsheetUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="min-h-[46px] inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-[#111318] hover:bg-[#242934] text-white text-xs font-semibold rounded-full shadow-xs"
+          {syncStatus?.spreadsheetUrl && (
+            <a
+              href={syncStatus.spreadsheetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-h-[46px] inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-[#111318] hover:bg-[#242934] text-white text-xs font-semibold rounded-full shadow-xs"
+            >
+              <ExternalLink className="w-4 h-4 shrink-0 text-[#E6B949]" />
+              <span>Open Live Google Sheet</span>
+            </a>
+          )}
+
+          {syncStatus?.configured && (
+            <motion.button
+              whileTap={{ scale: 0.98 }}
+              type="button"
+              disabled={syncingNow}
+              onClick={handleSyncNow}
+              className="min-h-[46px] inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white/90 hover:bg-white text-[#111318] border border-slate-900/15 text-xs font-semibold rounded-full cursor-pointer"
+            >
+              <RefreshCw className={`w-4 h-4 shrink-0 text-[#C89D3C] ${syncingNow ? 'animate-spin' : ''}`} />
+              <span>{syncingNow ? 'Syncing Sheet...' : 'Sync Google Sheet Now'}</span>
+            </motion.button>
+          )}
+
+          <motion.button
+            whileTap={{ scale: 0.98 }}
+            type="button"
+            onClick={onExportExcel}
+            className="min-h-[46px] inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-[#111318] hover:bg-[#242934] text-white text-xs font-semibold rounded-full cursor-pointer shadow-xs"
           >
-            <ExternalLink className="w-4 h-4 shrink-0 text-[#E6B949]" />
-            <span>Open Live Google Sheet</span>
-          </a>
+            <FileSpreadsheet className="w-4 h-4 shrink-0 text-[#E6B949]" />
+            <span>Download Excel (.xlsx)</span>
+          </motion.button>
 
           <motion.button
             whileTap={{ scale: 0.98 }}
@@ -406,17 +441,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="min-h-[46px] inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white/90 hover:bg-white text-[#111318] border border-slate-900/15 text-xs font-semibold rounded-full cursor-pointer"
           >
             <Upload className="w-4 h-4 shrink-0 text-[#111318]" />
-            <span>Merge Backup into Sheet</span>
-          </motion.button>
-
-          <motion.button
-            whileTap={{ scale: 0.98 }}
-            type="button"
-            onClick={onExportExcel}
-            className="min-h-[46px] inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white/90 hover:bg-white text-[#111318] border border-slate-900/15 text-xs font-semibold rounded-full cursor-pointer"
-          >
-            <FileSpreadsheet className="w-4 h-4 shrink-0 text-emerald-700" />
-            <span>Download Excel (.xlsx)</span>
+            <span>{workingBackup ? 'Merging...' : 'Merge JSON Backup'}</span>
           </motion.button>
 
           <input
@@ -432,30 +457,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           />
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-900/8 text-xs text-slate-500">
-          <span>
-            Linked spreadsheet: <span className="font-semibold text-[#111318]">{sheetConfig.spreadsheetTitle}</span>
-          </span>
-          <button
-            type="button"
-            disabled={workingBackup}
-            onClick={handleDisconnectSheet}
-            className="min-h-[36px] inline-flex items-center gap-1 text-slate-500 hover:text-rose-700 cursor-pointer"
-          >
-            <Unlink className="w-3.5 h-3.5" />
-            <span>Switch / Disconnect Google Sheet</span>
-          </button>
-        </div>
-
-        {sheetErr && (
-          <div className="p-3 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-2xl">
-            {sheetErr}
+        {(syncStatus?.lastError || syncStatus?.driveWarning) && (
+          <div className="p-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-2xl">
+            {syncStatus.lastError || syncStatus.driveWarning}
           </div>
         )}
-        {sheetMsg && (
+
+        {ledgerErr && (
+          <div className="p-3 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-2xl">
+            {ledgerErr}
+          </div>
+        )}
+        {ledgerMsg && (
           <div className="p-3 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-            <span>{sheetMsg}</span>
+            <span>{ledgerMsg}</span>
           </div>
         )}
       </motion.section>
@@ -566,30 +582,58 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           onSubmit={handleUpdatePassword}
           className="gallery-card rounded-3xl p-4 sm:p-6 space-y-4"
         >
-          <div>
-            <h2 className="font-display text-base font-bold text-[#111318] flex items-center gap-2">
-              <span className="w-7 h-7 rounded-xl bg-[#111318] text-[#E6B949] flex items-center justify-center shrink-0">
-                <KeyRound className="w-3.5 h-3.5" />
-              </span>
-              <span>{partnerId}&apos;s Login Password</span>
-            </h2>
-            <p className="text-xs text-slate-500 mt-1.5">
-              Update the password for {partnerId}. Changing your password only updates {partnerId}
-              &apos;s login; all trades, funds, and entries remain shared in the Google Sheet with{' '}
-              {partnerId === 'Prayag' ? 'Raj' : 'Prayag'}.
-            </p>
-          </div>
+          {!editingPassword ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-base font-bold text-[#111318] flex items-center gap-2">
+                    <span className="w-7 h-7 rounded-xl bg-[#111318] text-[#E6B949] flex items-center justify-center shrink-0">
+                      <KeyRound className="w-3.5 h-3.5" />
+                    </span>
+                    <span>{partnerId}&apos;s Login Password</span>
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    Update {partnerId}&apos;s password. All shared data stays unchanged.
+                  </p>
+                </div>
 
-          {envPasswordConfigured ? (
-            <div className="p-4 text-xs bg-slate-900/[0.04] border border-slate-900/12 rounded-2xl text-[#111318]">
-              {partnerId}&apos;s password is currently configured via environment secrets (
-              <span className="font-mono font-semibold">
-                {partnerId === 'Prayag' ? 'PRAYAG_PASSWORD' : 'RAJ_PASSWORD'}
-              </span>
-              ). Update it in Settings → Secrets to change it.
+                <motion.button
+                  whileTap={{ scale: 0.98 }}
+                  type="button"
+                  onClick={() => {
+                    setEditingPassword(true);
+                    setPwdErr(null);
+                    setPwdMsg(null);
+                  }}
+                  className="min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[#111318] hover:bg-[#242934] text-white text-xs font-semibold rounded-full cursor-pointer shadow-xs transition-colors"
+                >
+                  <KeyRound className="w-4 h-4 text-[#E6B949]" />
+                  <span>Change Password</span>
+                </motion.button>
+              </div>
+
+              {pwdMsg && (
+                <div className="p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <span>{pwdMsg}</span>
+                </div>
+              )}
             </div>
           ) : (
             <>
+              <div>
+                <h2 className="font-display text-base font-bold text-[#111318] flex items-center gap-2">
+                  <span className="w-7 h-7 rounded-xl bg-[#111318] text-[#E6B949] flex items-center justify-center shrink-0">
+                    <KeyRound className="w-3.5 h-3.5" />
+                  </span>
+                  <span>Change {partnerId}&apos;s Password</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-1.5">
+                  Changing your password only updates {partnerId}&apos;s login; all trades and funds
+                  remain shared with {partnerId === 'Prayag' ? 'Raj' : 'Prayag'}.
+                </p>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Current Password ({partnerId})
@@ -629,21 +673,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   {pwdErr}
                 </div>
               )}
-              {pwdMsg && (
-                <div className="p-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                  <span>{pwdMsg}</span>
-                </div>
-              )}
 
-              <motion.button
-                whileTap={{ scale: 0.98 }}
-                type="submit"
-                disabled={savingPwd}
-                className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 bg-[#111318] hover:bg-[#242934] disabled:bg-slate-400 text-white text-xs font-semibold rounded-full cursor-pointer shadow-xs"
-              >
-                {savingPwd ? 'Updating...' : `Update ${partnerId}'s Password`}
-              </motion.button>
+              <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                <motion.button
+                  whileTap={{ scale: 0.98 }}
+                  type="submit"
+                  disabled={savingPwd}
+                  className="min-h-[44px] px-5 py-2.5 bg-[#111318] hover:bg-[#242934] disabled:bg-slate-400 text-white text-xs font-semibold rounded-full cursor-pointer shadow-xs"
+                >
+                  {savingPwd ? 'Updating...' : 'Proceed'}
+                </motion.button>
+                <button
+                  type="button"
+                  disabled={savingPwd}
+                  onClick={() => {
+                    setEditingPassword(false);
+                    setCurrentPassword('');
+                    setNewPassword('');
+                    setConfirmPassword('');
+                    setPwdErr(null);
+                  }}
+                  className="min-h-[44px] px-4 py-2.5 text-xs font-medium text-slate-700 bg-white border border-slate-900/15 rounded-full hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
             </>
           )}
         </motion.form>
@@ -659,10 +713,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="px-4 sm:px-5 py-4 border-b border-slate-900/8 flex items-center justify-between gap-3">
           <div>
             <h3 className="font-display text-sm font-bold text-[#111318]">
-              Shared Google Sheet Audit History
+              Shared Ledger Audit History
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Live change log stored inside the Audit_Logs tab for both Prayag and Raj
+              Live change log shared identically for both Prayag and Raj
             </p>
           </div>
           <button
@@ -675,7 +729,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
 
         {loadingLogs ? (
-          <div className="p-6 text-xs text-slate-500">Loading audit history from Google Sheet...</div>
+          <div className="p-6 text-xs text-slate-500">Loading audit history...</div>
         ) : auditLogs.length === 0 ? (
           <div className="p-6 text-xs text-slate-500">No audit entries yet.</div>
         ) : (

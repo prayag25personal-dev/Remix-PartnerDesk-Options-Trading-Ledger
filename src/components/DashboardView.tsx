@@ -14,6 +14,7 @@ import {
   Upload,
   Wallet,
 } from 'lucide-react';
+import { round2 } from '../../shared/calculations.ts';
 import type { TradeGroupRecord } from '../../shared/types.ts';
 import type { DashboardResponse } from '../lib/api.ts';
 import { formatDateShort, formatINR } from '../lib/format.ts';
@@ -98,6 +99,57 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       avgNet: Math.round((total / realisedTrades.length) * 100) / 100,
     };
   }, [realisedTrades]);
+
+  const turnoverStats = useMemo(() => {
+    let buy = 0;
+    let sell = 0;
+    let buyQty = 0;
+    let sellQty = 0;
+
+    if (trades.length > 0) {
+      for (const t of trades) {
+        if (t.orders && t.orders.length > 0) {
+          for (const o of t.orders) {
+            const qty = Math.max(0, Number(o.quantity) || 0);
+            const price = Math.max(0, Number(o.executionPrice) || 0);
+            const amt = Number(o.amount) > 0 ? Number(o.amount) : round2(qty * price);
+            if (o.side === 'BUY') {
+              buy += amt;
+              buyQty += qty;
+            } else if (o.side === 'SELL') {
+              sell += amt;
+              sellQty += qty;
+            }
+          }
+        } else {
+          buy += Number(t.totalBuyAmount) || 0;
+          sell += Number(t.totalSellAmount) || 0;
+          buyQty += Number(t.buyQty) || 0;
+          sellQty += Number(t.sellQty) || 0;
+        }
+      }
+    } else if (data?.summary) {
+      buy = Number(data.summary.totalBuyAmount) || 0;
+      sell = Number(data.summary.totalSellAmount) || 0;
+    }
+
+    const cleanBuy = round2(buy);
+    const cleanSell = round2(sell);
+    const total = round2(cleanBuy + cleanSell);
+    const buyPct = total > 0 ? Math.min(100, Math.max(0, (cleanBuy / total) * 100)) : 0;
+    const sellPct = total > 0 ? Math.max(0, 100 - buyPct) : 0;
+
+    return {
+      buy: cleanBuy,
+      sell: cleanSell,
+      total,
+      buyQty,
+      sellQty,
+      totalQty: buyQty + sellQty,
+      buyPct,
+      sellPct,
+    };
+  }, [trades, data]);
 
   if (loading || !data) {
     return (
@@ -320,14 +372,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <stop
                       offset="0%"
                       stopColor={
-                        points[points.length - 1].cumulative >= 0 ? '#111318' : '#e11d48'
+                        points[points.length - 1].cumulative >= 0 ? 'var(--chart-line)' : '#e11d48'
                       }
                       stopOpacity="0.18"
                     />
                     <stop
                       offset="100%"
                       stopColor={
-                        points[points.length - 1].cumulative >= 0 ? '#111318' : '#e11d48'
+                        points[points.length - 1].cumulative >= 0 ? 'var(--chart-line)' : '#e11d48'
                       }
                       stopOpacity="0.01"
                     />
@@ -339,7 +391,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   x2={W - PAD_R}
                   y1={PAD_T}
                   y2={PAD_T}
-                  stroke="rgba(17,19,24,0.06)"
+                  stroke="var(--chart-grid)"
                   strokeWidth="1"
                 />
                 <line
@@ -347,7 +399,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   x2={W - PAD_R}
                   y1={zeroY}
                   y2={zeroY}
-                  stroke="rgba(17,19,24,0.22)"
+                  stroke="var(--chart-zero)"
                   strokeDasharray="3 3"
                   strokeWidth="1"
                 />
@@ -356,7 +408,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   x2={W - PAD_R}
                   y1={H - PAD_B}
                   y2={H - PAD_B}
-                  stroke="rgba(17,19,24,0.06)"
+                  stroke="var(--chart-grid)"
                   strokeWidth="1"
                 />
 
@@ -381,7 +433,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <path
                   d={linePath}
                   fill="none"
-                  stroke={points[points.length - 1].cumulative >= 0 ? '#111318' : '#e11d48'}
+                  stroke={points[points.length - 1].cumulative >= 0 ? 'var(--chart-line)' : '#e11d48'}
                   strokeWidth="2.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -450,7 +502,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="h-3 w-full bg-slate-900/8 rounded-full overflow-hidden flex">
                 <div
                   style={{ width: `${prayagPct}%` }}
-                  className="bg-[#111318] h-full transition-all duration-300"
+                  className="bg-[#111318] dark:bg-[#F8FAFC] h-full transition-all duration-300"
                 />
                 <div
                   style={{ width: `${rajPct}%` }}
@@ -465,7 +517,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="py-3.5 flex items-center justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#111318] shrink-0" />
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#111318] dark:bg-[#F8FAFC] shrink-0" />
                   <span className="text-sm font-semibold text-[#111318]">Prayag</span>
                 </div>
                 <div className="mt-1 text-xs text-slate-500 font-mono tabular-nums">
@@ -591,13 +643,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="gallery-card rounded-2xl p-3.5 sm:p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-[11px] sm:text-xs font-medium text-slate-500">
             <span>Options Turnover</span>
-            <Wallet className="w-4 h-4 text-[#111318] shrink-0" />
+            <Wallet className="w-4 h-4 text-[#C89D3C] shrink-0" />
           </div>
-          <div className="mt-2 text-lg sm:text-2xl font-bold text-[#111318] font-mono tabular-nums">
-            {formatINR(summary.totalBuyAmount + summary.totalSellAmount)}
+          <div className="mt-2 flex items-baseline justify-between gap-2">
+            <span className="text-lg sm:text-2xl font-bold text-[#111318] font-mono tabular-nums">
+              {formatINR(turnoverStats.total)}
+            </span>
+            {turnoverStats.totalQty > 0 && (
+              <span className="text-[11px] sm:text-xs font-mono tabular-nums text-slate-500 shrink-0">
+                {turnoverStats.totalQty.toLocaleString('en-IN')} qty
+              </span>
+            )}
           </div>
-          <div className="mt-1.5 sm:mt-2 text-[11px] sm:text-xs text-slate-500 font-mono tabular-nums truncate">
-            B {formatINR(summary.totalBuyAmount)} · S {formatINR(summary.totalSellAmount)}
+          <div className="mt-2 space-y-1.5">
+            <div className="h-1.5 bg-slate-900/8 rounded-full overflow-hidden flex">
+              <div
+                style={{ width: `${turnoverStats.buyPct}%` }}
+                className="bg-[#111318] dark:bg-[#F8FAFC] h-full transition-all duration-300"
+              />
+              <div
+                style={{ width: `${turnoverStats.sellPct}%` }}
+                className="bg-[#C89D3C] h-full transition-all duration-300"
+              />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] sm:text-xs text-slate-500 font-mono tabular-nums">
+              <span>Buy {formatINR(turnoverStats.buy)}</span>
+              <span>Sell {formatINR(turnoverStats.sell)}</span>
+            </div>
           </div>
         </div>
 
@@ -638,7 +710,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={() => onNavigate('analytics')}
-                className="text-xs font-semibold text-[#111318] hover:text-[#9F771B] cursor-pointer"
+                className="min-h-[36px] inline-flex items-center justify-center px-3.5 py-1.5 bg-[#111318] hover:bg-[#242934] text-white text-xs font-semibold rounded-full cursor-pointer shadow-xs transition-colors whitespace-nowrap shrink-0"
               >
                 Full Analytics →
               </button>
@@ -673,7 +745,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <div className="h-2 bg-slate-900/8 rounded-full overflow-hidden">
                         <div
                           style={{ width: `${widthPct}%` }}
-                          className={`h-full rounded-full ${pos ? 'bg-[#111318]' : 'bg-rose-500'}`}
+                          className={`h-full rounded-full ${pos ? 'bg-[#111318] dark:bg-[#E6B949]' : 'bg-rose-500'}`}
                         />
                       </div>
                     </div>
@@ -841,7 +913,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('history')}
-              className="min-h-[36px] text-xs font-semibold text-[#111318] hover:text-[#9F771B] cursor-pointer"
+              className="min-h-[36px] inline-flex items-center justify-center px-3.5 py-1.5 bg-[#111318] hover:bg-[#242934] text-white text-xs font-semibold rounded-full cursor-pointer shadow-xs transition-colors whitespace-nowrap shrink-0"
             >
               View All →
             </button>
@@ -963,7 +1035,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('funds')}
-              className="text-xs font-semibold text-[#111318] hover:text-[#9F771B] cursor-pointer"
+              className="min-h-[36px] inline-flex items-center justify-center px-3.5 py-1.5 bg-[#111318] hover:bg-[#242934] text-white text-xs font-semibold rounded-full cursor-pointer shadow-xs transition-colors whitespace-nowrap shrink-0"
             >
               Add / Withdraw →
             </button>

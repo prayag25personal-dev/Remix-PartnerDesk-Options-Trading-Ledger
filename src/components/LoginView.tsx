@@ -74,7 +74,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
           PartnerDesk
         </span>
         <span className="text-xs font-medium text-slate-600 whitespace-nowrap">
-          Prayag & Raj · Shared Google Sheet
+          Prayag & Raj · Live Shared Ledger
         </span>
       </header>
 
@@ -90,7 +90,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
           >
             <div className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600">
               <ShieldCheck className="w-4 h-4 text-[#111318]" />
-              <span>Angel One Options Ledger · Live Shared Google Sheet</span>
+              <span>Angel One Options Ledger · Centralized Cloud Sync</span>
             </div>
 
             <h1
@@ -107,7 +107,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
             <p className="text-sm sm:text-base text-slate-600 max-w-xl leading-relaxed">
               Built for Prayag and Raj to track Angel One CE/PE options with automatic screenshot
-              recognition, accurate NSE brokerage math, and live Google Sheets sync across both partners.
+              recognition, accurate NSE brokerage math, and automatic background sync across both partners.
             </p>
 
             {/* 3D Kinetic Cubes & Spinning Gold Coin Showcase */}
@@ -130,7 +130,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
               <p className="text-xs sm:text-sm text-slate-600 mt-1.5 leading-relaxed">
                 {isSetup
                   ? 'Set the access password for your account.'
-                  : 'Sign in as Prayag or Raj with your personal password. Every trade, deposit, and edit syncs to the exact same shared Google Sheet so both partners always see live identical data.'}
+                  : 'Sign in as Prayag or Raj with your password. Every trade, screenshot, deposit, and edit syncs automatically so both partners always see identical live data.'}
               </p>
             </div>
 
@@ -244,7 +244,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
             </form>
 
             <div className="mt-6 pt-4 border-t border-slate-900/8 text-xs text-slate-500 flex items-center justify-between gap-2">
-              <span>Live Shared Google Sheet · Prayag & Raj</span>
+              <span>Live Shared Ledger · Prayag & Raj</span>
               <span>Excel (.xlsx) ready</span>
             </div>
           </motion.div>

@@ -89,10 +89,25 @@ export interface TradeGroupRecord {
   screenshots?: {
     id: number;
     imageDataUrl: string;
+    driveFileId?: string | null;
+    driveUrl?: string | null;
     originalFilename: string | null;
     uploadedBy: PartnerId;
     uploadedAt: string;
   }[];
+}
+
+export interface GoogleSyncStatus {
+  configured: boolean;
+  spreadsheetId: string | null;
+  spreadsheetUrl: string | null;
+  spreadsheetTitle: string | null;
+  driveFolderConfigured: boolean;
+  lastSyncedAt: string | null;
+  pendingSync: boolean;
+  syncingNow: boolean;
+  lastError: string | null;
+  driveWarning: string | null;
 }
 
 export type FundEntryType = 'DEPOSIT' | 'WITHDRAWAL';

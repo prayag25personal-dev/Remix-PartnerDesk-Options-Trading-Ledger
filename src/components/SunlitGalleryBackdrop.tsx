@@ -4,35 +4,19 @@ export const SunlitGalleryBackdrop: React.FC = () => {
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none fixed inset-0 overflow-hidden -z-10 select-none"
-      style={{
-        background:
-          'radial-gradient(120% 90% at 68% 12%, #ffffff 0%, #f1f3f6 42%, #dfe4ea 100%)',
-      }}
+      className="sunlit-backdrop pointer-events-none fixed inset-0 overflow-hidden -z-10 select-none"
     >
-      {/* Pre-blended warm daylight beam sweep (zero runtime blur filter cost) */}
-      <div
-        className="absolute -top-24 -right-20 w-[75vw] h-[70vh] rounded-full opacity-80"
-        style={{
-          background:
-            'radial-gradient(closest-side, rgba(255,252,242,0.92) 0%, rgba(255,248,225,0.38) 52%, rgba(212,175,55,0.06) 76%, transparent 100%)',
-        }}
-      />
+      {/* Pre-blended daylight/ambient beam sweep (zero runtime blur filter cost) */}
+      <div className="sunlit-beam absolute -top-24 -right-20 w-[75vw] h-[70vh] rounded-full opacity-80" />
 
       {/* Pre-blended soft architectural window shadow */}
-      <div
-        className="absolute -bottom-24 -left-16 w-[65vw] h-[60vh] rounded-full opacity-55"
-        style={{
-          background:
-            'radial-gradient(closest-side, rgba(148,163,184,0.22) 0%, rgba(203,213,225,0.08) 58%, transparent 100%)',
-        }}
-      />
+      <div className="sunlit-shadow absolute -bottom-24 -left-16 w-[65vw] h-[60vh] rounded-full opacity-55" />
 
-      {/* Soft diagonal sunlit botanical shadows using radial gradients (no feGaussianBlur) */}
+      {/* Soft diagonal botanical shadows using radial gradients (no feGaussianBlur) */}
       <svg
         viewBox="0 0 1440 900"
         preserveAspectRatio="xMidYMid slice"
-        className="absolute inset-0 w-full h-full opacity-[0.06]"
+        className="sunlit-leaves absolute inset-0 w-full h-full opacity-[0.06]"
       >
         <defs>
           <radialGradient id="leafShadowGrad" cx="50%" cy="50%" r="50%">

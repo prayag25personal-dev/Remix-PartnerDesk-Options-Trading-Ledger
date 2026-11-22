@@ -141,10 +141,15 @@ async function initDatabase(): Promise<void> {
         id SERIAL PRIMARY KEY,
         image_hash TEXT UNIQUE NOT NULL,
         image_data_url TEXT NOT NULL,
+        drive_file_id TEXT,
+        drive_url TEXT,
         original_filename TEXT,
         uploaded_by TEXT NOT NULL,
         uploaded_at TEXT NOT NULL
       );
+
+      ALTER TABLE uploads ADD COLUMN IF NOT EXISTS drive_file_id TEXT;
+      ALTER TABLE uploads ADD COLUMN IF NOT EXISTS drive_url TEXT;
 
       CREATE TABLE IF NOT EXISTS trade_groups (
         id SERIAL PRIMARY KEY,
@@ -290,6 +295,8 @@ async function initDatabase(): Promise<void> {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       image_hash TEXT UNIQUE NOT NULL,
       image_data_url TEXT NOT NULL,
+      drive_file_id TEXT,
+      drive_url TEXT,
       original_filename TEXT,
       uploaded_by TEXT NOT NULL,
       uploaded_at TEXT NOT NULL
@@ -436,6 +443,14 @@ async function initDatabase(): Promise<void> {
   const depCols = sqliteDb.prepare('PRAGMA table_info(deposits)').all() as { name: string }[];
   if (!depCols.some((c) => c.name === 'entry_type')) {
     sqliteDb.exec("ALTER TABLE deposits ADD COLUMN entry_type TEXT NOT NULL DEFAULT 'DEPOSIT'");
+  }
+
+  const uploadCols = sqliteDb.prepare('PRAGMA table_info(uploads)').all() as { name: string }[];
+  if (!uploadCols.some((c) => c.name === 'drive_file_id')) {
+    sqliteDb.exec('ALTER TABLE uploads ADD COLUMN drive_file_id TEXT');
+  }
+  if (!uploadCols.some((c) => c.name === 'drive_url')) {
+    sqliteDb.exec('ALTER TABLE uploads ADD COLUMN drive_url TEXT');
   }
 
   sqliteDb.exec(`
@@ -684,10 +699,29 @@ export async function claimInitialPassword(password: string, actor: PartnerId): 
   );
 }
 
+function partnerPasswordOverrideKey(partnerId: PartnerId): string {
+  return partnerId === 'Prayag'
+    ? 'partner_password_prayag_override'
+    : 'partner_password_raj_override';
+}
+
 export async function verifyPartnerPassword(
   partnerId: PartnerId,
   password: string,
 ): Promise<boolean> {
+  const db = await getExecutor();
+  const overrideRow = await db.get<{ value: string }>(
+    'SELECT value FROM app_config WHERE key = ?',
+    partnerPasswordOverrideKey(partnerId),
+  );
+  if (overrideRow?.value === '1') {
+    const row = await db.get<{ value: string }>(
+      'SELECT value FROM app_config WHERE key = ?',
+      partnerPasswordConfigKey(partnerId),
+    );
+    const storedHash = row?.value || DEFAULT_PARTNER_PASSWORD_HASHES[partnerId];
+    return verifyPasswordHash(password, storedHash);
+  }
   const envPass = getPartnerEnvPassword(partnerId);
   if (envPass.length > 0) {
     const a = Buffer.from(password, 'utf8');
@@ -695,7 +729,6 @@ export async function verifyPartnerPassword(
     if (a.length !== b.length) return false;
     return crypto.timingSafeEqual(a, b);
   }
-  const db = await getExecutor();
   const row = await db.get<{ value: string }>(
     'SELECT value FROM app_config WHERE key = ?',
     partnerPasswordConfigKey(partnerId),
@@ -709,31 +742,38 @@ export async function updatePartnerPassword(
   currentPassword: string,
   newPassword: string,
 ): Promise<void> {
-  const envPass = getPartnerEnvPassword(actor);
-  if (envPass.length > 0) {
-    throw new Error('ENV_PASSWORD_LOCKED');
-  }
   if (!(await verifyPartnerPassword(actor, currentPassword))) {
     throw new Error('INVALID_CURRENT_PASSWORD');
   }
   const hash = hashPassword(newPassword);
   const now = nowIso();
-  const db = await getExecutor();
-  await db.run(
-    `INSERT INTO app_config (key, value, updated_at)
-     VALUES (?, ?, ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    partnerPasswordConfigKey(actor),
-    hash,
-    now,
-  );
-  await logAudit(
-    actor,
-    'UPDATE_PASSWORD',
-    'AUTH',
-    actor,
-    `${actor} updated their login password`,
-  );
+  await runInTransaction(async (tx) => {
+    await tx.run(
+      `INSERT INTO app_config (key, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      partnerPasswordConfigKey(actor),
+      hash,
+      now,
+    );
+    await tx.run(
+      `INSERT INTO app_config (key, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      partnerPasswordOverrideKey(actor),
+      '1',
+      now,
+    );
+    await logAudit(
+      actor,
+      'UPDATE_PASSWORD',
+      'AUTH',
+      actor,
+      `${actor} updated their login password`,
+      undefined,
+      tx,
+    );
+  });
 }
 
 export interface SessionPayload {
@@ -1229,11 +1269,13 @@ export async function listTradeGroups(tx?: DbExecutor): Promise<TradeGroupRecord
     trade_group_id: number;
     id: number;
     image_data_url: string;
+    drive_file_id: string | null;
+    drive_url: string | null;
     original_filename: string | null;
     uploaded_by: string;
     uploaded_at: string;
   }>(
-    `SELECT DISTINCT links.trade_group_id, u.id, u.image_data_url, u.original_filename, u.uploaded_by, u.uploaded_at
+    `SELECT DISTINCT links.trade_group_id, u.id, u.image_data_url, u.drive_file_id, u.drive_url, u.original_filename, u.uploaded_by, u.uploaded_at
      FROM (
        SELECT trade_group_id, upload_id FROM group_screenshots
        UNION
@@ -1249,6 +1291,8 @@ export async function listTradeGroups(tx?: DbExecutor): Promise<TradeGroupRecord
     list.push({
       id: Number(u.id),
       imageDataUrl: u.image_data_url,
+      driveFileId: u.drive_file_id || null,
+      driveUrl: u.drive_url || null,
       originalFilename: u.original_filename,
       uploadedBy: u.uploaded_by as PartnerId,
       uploadedAt: u.uploaded_at,
@@ -1280,11 +1324,13 @@ export async function getTradeGroupById(
   const uploadRows = await db.all<{
     id: number;
     image_data_url: string;
+    drive_file_id: string | null;
+    drive_url: string | null;
     original_filename: string | null;
     uploaded_by: string;
     uploaded_at: string;
   }>(
-    `SELECT DISTINCT u.id, u.image_data_url, u.original_filename, u.uploaded_by, u.uploaded_at
+    `SELECT DISTINCT u.id, u.image_data_url, u.drive_file_id, u.drive_url, u.original_filename, u.uploaded_by, u.uploaded_at
      FROM uploads u
      WHERE u.id IN (
        SELECT upload_id FROM group_screenshots WHERE trade_group_id = ?
@@ -1298,6 +1344,8 @@ export async function getTradeGroupById(
   group.screenshots = uploadRows.map((u) => ({
     id: Number(u.id),
     imageDataUrl: u.image_data_url,
+    driveFileId: u.drive_file_id || null,
+    driveUrl: u.drive_url || null,
     originalFilename: u.original_filename,
     uploadedBy: u.uploaded_by as PartnerId,
     uploadedAt: u.uploaded_at,
@@ -1853,6 +1901,8 @@ export interface ServerBackupPayload {
     id: number;
     imageHash: string;
     imageDataUrl: string;
+    driveFileId?: string | null;
+    driveUrl?: string | null;
     originalFilename: string | null;
     uploadedBy: PartnerId;
     uploadedAt: string;
@@ -1869,11 +1919,13 @@ export async function exportServerBackupPayload(): Promise<ServerBackupPayload> 
       id: number;
       image_hash: string;
       image_data_url: string;
+      drive_file_id: string | null;
+      drive_url: string | null;
       original_filename: string | null;
       uploaded_by: string;
       uploaded_at: string;
     }>(
-      'SELECT id, image_hash, image_data_url, original_filename, uploaded_by, uploaded_at FROM uploads ORDER BY id ASC',
+      'SELECT id, image_hash, image_data_url, drive_file_id, drive_url, original_filename, uploaded_by, uploaded_at FROM uploads ORDER BY id ASC',
     ),
     db.all<Record<string, unknown>>('SELECT * FROM trade_groups ORDER BY trading_date DESC, id DESC'),
     db.all<Record<string, unknown>>('SELECT * FROM orders ORDER BY id ASC'),
@@ -1892,6 +1944,8 @@ export async function exportServerBackupPayload(): Promise<ServerBackupPayload> 
       id: Number(u.id),
       imageHash: u.image_hash,
       imageDataUrl: u.image_data_url,
+      driveFileId: u.drive_file_id || null,
+      driveUrl: u.drive_url || null,
       originalFilename: u.original_filename,
       uploadedBy: (u.uploaded_by === 'Raj' ? 'Raj' : 'Prayag') as PartnerId,
       uploadedAt: u.uploaded_at,
@@ -2121,91 +2175,188 @@ export async function mergeServerBackupPayload(
   });
 }
 
-export interface SharedSheetConfig {
-  spreadsheetId: string;
-  spreadsheetUrl: string;
-  spreadsheetTitle: string;
-  linkedBy: PartnerId;
-  linkedAt: string;
+export interface PendingDriveUpload {
+  id: number;
+  imageHash: string;
+  imageDataUrl: string;
+  originalFilename: string | null;
+  uploadedBy: PartnerId;
+  uploadedAt: string;
 }
 
-const SHARED_SHEET_CONFIG_KEY = 'shared_google_sheet';
+export async function listUploadsPendingDriveSync(): Promise<PendingDriveUpload[]> {
+  const db = await getExecutor();
+  const rows = await db.all<{
+    id: number;
+    image_hash: string;
+    image_data_url: string;
+    original_filename: string | null;
+    uploaded_by: string;
+    uploaded_at: string;
+  }>(
+    'SELECT id, image_hash, image_data_url, original_filename, uploaded_by, uploaded_at FROM uploads WHERE drive_file_id IS NULL ORDER BY id ASC',
+  );
+  return rows.map((u) => ({
+    id: Number(u.id),
+    imageHash: u.image_hash,
+    imageDataUrl: u.image_data_url,
+    originalFilename: u.original_filename,
+    uploadedBy: (u.uploaded_by === 'Raj' ? 'Raj' : 'Prayag') as PartnerId,
+    uploadedAt: u.uploaded_at,
+  }));
+}
 
-export async function getSharedSheetConfig(): Promise<SharedSheetConfig | null> {
+export async function updateUploadDriveRef(
+  uploadId: number,
+  driveFileId: string,
+  driveUrl: string,
+): Promise<void> {
+  const db = await getExecutor();
+  await db.run(
+    'UPDATE uploads SET drive_file_id = ?, drive_url = ? WHERE id = ?',
+    driveFileId,
+    driveUrl,
+    uploadId,
+  );
+}
+
+export interface SheetSyncMeta {
+  lastSyncedAt: string | null;
+  pendingSync: boolean;
+  lastError: string | null;
+  driveWarning: string | null;
+  spreadsheetTitle: string | null;
+}
+
+const SHEET_SYNC_META_KEY = 'sheet_sync_meta';
+
+export async function getSheetSyncMeta(): Promise<SheetSyncMeta> {
   const db = await getExecutor();
   const row = await db.get<{ value: string }>(
     'SELECT value FROM app_config WHERE key = ?',
-    SHARED_SHEET_CONFIG_KEY,
+    SHEET_SYNC_META_KEY,
   );
-  if (!row?.value) return null;
+  if (!row?.value) {
+    return {
+      lastSyncedAt: null,
+      pendingSync: false,
+      lastError: null,
+      driveWarning: null,
+      spreadsheetTitle: null,
+    };
+  }
   try {
-    const parsed = JSON.parse(row.value) as Partial<SharedSheetConfig>;
-    if (
-      typeof parsed.spreadsheetId === 'string' &&
-      /^[a-zA-Z0-9-_]{10,128}$/.test(parsed.spreadsheetId)
-    ) {
-      return {
-        spreadsheetId: parsed.spreadsheetId,
-        spreadsheetUrl:
-          typeof parsed.spreadsheetUrl === 'string' &&
-          parsed.spreadsheetUrl.startsWith('https://docs.google.com/spreadsheets/')
-            ? parsed.spreadsheetUrl
-            : `https://docs.google.com/spreadsheets/d/${parsed.spreadsheetId}/edit`,
-        spreadsheetTitle:
-          typeof parsed.spreadsheetTitle === 'string' && parsed.spreadsheetTitle.trim()
-            ? parsed.spreadsheetTitle.trim()
-            : 'PartnerDesk Ledger',
-        linkedBy: parsed.linkedBy === 'Raj' ? 'Raj' : 'Prayag',
-        linkedAt: typeof parsed.linkedAt === 'string' ? parsed.linkedAt : nowIso(),
-      };
-    }
-    return null;
+    const parsed = JSON.parse(row.value) as Partial<SheetSyncMeta>;
+    return {
+      lastSyncedAt: typeof parsed.lastSyncedAt === 'string' ? parsed.lastSyncedAt : null,
+      pendingSync: Boolean(parsed.pendingSync),
+      lastError: typeof parsed.lastError === 'string' ? parsed.lastError : null,
+      driveWarning: typeof parsed.driveWarning === 'string' ? parsed.driveWarning : null,
+      spreadsheetTitle:
+        typeof parsed.spreadsheetTitle === 'string' ? parsed.spreadsheetTitle : null,
+    };
   } catch {
-    return null;
+    return {
+      lastSyncedAt: null,
+      pendingSync: false,
+      lastError: null,
+      driveWarning: null,
+      spreadsheetTitle: null,
+    };
   }
 }
 
-export async function saveSharedSheetConfig(params: {
-  spreadsheetId: string;
-  spreadsheetUrl?: string;
-  spreadsheetTitle?: string;
-  linkedBy: PartnerId;
-}): Promise<SharedSheetConfig> {
-  const cleanId = params.spreadsheetId.trim();
-  if (!/^[a-zA-Z0-9-_]{10,128}$/.test(cleanId)) {
-    throw new Error('Invalid Google Spreadsheet ID.');
-  }
-  const cleanUrl =
-    params.spreadsheetUrl && params.spreadsheetUrl.startsWith('https://docs.google.com/spreadsheets/')
-      ? params.spreadsheetUrl
-      : `https://docs.google.com/spreadsheets/d/${cleanId}/edit`;
-  const cleanTitle =
-    params.spreadsheetTitle && params.spreadsheetTitle.trim()
-      ? params.spreadsheetTitle.trim().slice(0, 140)
-      : 'PartnerDesk — Options Trading Ledger';
-  const config: SharedSheetConfig = {
-    spreadsheetId: cleanId,
-    spreadsheetUrl: cleanUrl,
-    spreadsheetTitle: cleanTitle,
-    linkedBy: params.linkedBy,
-    linkedAt: nowIso(),
+export async function updateSheetSyncMeta(patch: Partial<SheetSyncMeta>): Promise<SheetSyncMeta> {
+  const current = await getSheetSyncMeta();
+  const next: SheetSyncMeta = {
+    lastSyncedAt: patch.lastSyncedAt !== undefined ? patch.lastSyncedAt : current.lastSyncedAt,
+    pendingSync: patch.pendingSync !== undefined ? patch.pendingSync : current.pendingSync,
+    lastError: patch.lastError !== undefined ? patch.lastError : current.lastError,
+    driveWarning: patch.driveWarning !== undefined ? patch.driveWarning : current.driveWarning,
+    spreadsheetTitle:
+      patch.spreadsheetTitle !== undefined ? patch.spreadsheetTitle : current.spreadsheetTitle,
   };
-
   const db = await getExecutor();
-  const updatedAt = nowIso();
   await db.run(
     `INSERT INTO app_config (key, value, updated_at)
      VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    SHARED_SHEET_CONFIG_KEY,
-    JSON.stringify(config),
-    updatedAt,
+    SHEET_SYNC_META_KEY,
+    JSON.stringify(next),
+    nowIso(),
   );
-  return config;
+  return next;
 }
 
-export async function clearSharedSheetConfig(): Promise<void> {
+export async function getFullLedgerSnapshotForSync(): Promise<{
+  dashboard: Awaited<ReturnType<typeof getDashboardSummary>>;
+  rates: ChargeRates;
+  tradeGroups: TradeGroupRecord[];
+  orders: TradeOrderRecord[];
+  deposits: DepositRecord[];
+  uploads: {
+    id: number;
+    imageHash: string;
+    driveFileId: string | null;
+    driveUrl: string | null;
+    originalFilename: string | null;
+    uploadedBy: PartnerId;
+    uploadedAt: string;
+  }[];
+  groupScreenshots: { tradeGroupId: number; uploadId: number }[];
+  auditLogs: AuditLogRecord[];
+}> {
   const db = await getExecutor();
-  await db.run('DELETE FROM app_config WHERE key = ?', SHARED_SHEET_CONFIG_KEY);
+  const [dashboard, rates, groupRows, orderRows, deposits, uploadRows, linkRows, auditLogs] =
+    await Promise.all([
+      getDashboardSummary(),
+      getChargeRates(db),
+      db.all<Record<string, unknown>>('SELECT * FROM trade_groups ORDER BY trading_date DESC, id DESC'),
+      db.all<Record<string, unknown>>('SELECT * FROM orders ORDER BY id ASC'),
+      listDeposits(db),
+      db.all<{
+        id: number;
+        image_hash: string;
+        drive_file_id: string | null;
+        drive_url: string | null;
+        original_filename: string | null;
+        uploaded_by: string;
+        uploaded_at: string;
+      }>(
+        'SELECT id, image_hash, drive_file_id, drive_url, original_filename, uploaded_by, uploaded_at FROM uploads ORDER BY id ASC',
+      ),
+      db.all<{ trade_group_id: number; upload_id: number }>(
+        `SELECT DISTINCT trade_group_id, upload_id FROM (
+           SELECT trade_group_id, upload_id FROM group_screenshots
+           UNION
+           SELECT trade_group_id, upload_id FROM orders WHERE upload_id IS NOT NULL
+         ) links
+         ORDER BY trade_group_id ASC, upload_id ASC`,
+      ),
+      listAuditLogs(500, db),
+    ]);
+
+  return {
+    dashboard,
+    rates,
+    tradeGroups: groupRows.map(mapTradeGroupRow),
+    orders: orderRows.map(mapOrderRow),
+    deposits,
+    uploads: uploadRows.map((u) => ({
+      id: Number(u.id),
+      imageHash: u.image_hash,
+      driveFileId: u.drive_file_id || null,
+      driveUrl: u.drive_url || null,
+      originalFilename: u.original_filename,
+      uploadedBy: (u.uploaded_by === 'Raj' ? 'Raj' : 'Prayag') as PartnerId,
+      uploadedAt: u.uploaded_at,
+    })),
+    groupScreenshots: linkRows.map((l) => ({
+      tradeGroupId: Number(l.trade_group_id),
+      uploadId: Number(l.upload_id),
+    })),
+    auditLogs,
+  };
 }
+
 

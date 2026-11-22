@@ -13,7 +13,6 @@ import {
 import type { ChargesMode, OptionType, OrderSide, TradeGroupRecord } from '../../shared/types.ts';
 import { api } from '../lib/api.ts';
 import { formatDateShort, formatDateTime, formatINR } from '../lib/format.ts';
-import { isSheetActionCancelled } from '../lib/sheetConfirm.ts';
 
 interface TradingHistoryViewProps {
   trades: TradeGroupRecord[];
@@ -32,6 +31,8 @@ export const TradingHistoryView: React.FC<TradingHistoryViewProps> = ({
   const [stockFilter, setStockFilter] = useState('ALL');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [dateFromFocused, setDateFromFocused] = useState(false);
+  const [dateToFocused, setDateToFocused] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'CLOSED' | 'OPEN'>('ALL');
 
   const [selectedTrade, setSelectedTrade] = useState<TradeGroupRecord | null>(null);
@@ -143,9 +144,7 @@ export const TradingHistoryView: React.FC<TradingHistoryViewProps> = ({
       setReconciling(false);
       onChanged();
     } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setDetailError(err instanceof Error ? err.message : 'Failed to update charges.');
-      }
+      setDetailError(err instanceof Error ? err.message : 'Failed to update charges.');
     } finally {
       setSavingDetail(false);
     }
@@ -161,9 +160,7 @@ export const TradingHistoryView: React.FC<TradingHistoryViewProps> = ({
       setEditing(false);
       onChanged();
     } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setDetailError(err instanceof Error ? err.message : 'Failed to update trade.');
-      }
+      setDetailError(err instanceof Error ? err.message : 'Failed to update trade.');
     } finally {
       setSavingDetail(false);
     }
@@ -177,9 +174,7 @@ export const TradingHistoryView: React.FC<TradingHistoryViewProps> = ({
       if (selectedTrade?.id === trade.id) setSelectedTrade(null);
       onChanged();
     } catch (err) {
-      if (!isSheetActionCancelled(err)) {
-        setListError(err instanceof Error ? err.message : 'Failed to delete trade.');
-      }
+      setListError(err instanceof Error ? err.message : 'Failed to delete trade.');
     }
   };
 
@@ -213,19 +208,39 @@ export const TradingHistoryView: React.FC<TradingHistoryViewProps> = ({
 
         <div className="flex items-center gap-1.5 text-xs text-slate-600 w-full sm:w-auto">
           <input
-            type="date"
+            type={dateFrom || dateFromFocused ? 'date' : 'text'}
             value={dateFrom}
+            onPointerDown={(e) => {
+              e.currentTarget.type = 'date';
+              setDateFromFocused(true);
+            }}
+            onFocus={(e) => {
+              e.currentTarget.type = 'date';
+              setDateFromFocused(true);
+            }}
+            onBlur={() => setDateFromFocused(false)}
             onChange={(e) => setDateFrom(e.target.value)}
+            placeholder="dd-mm-yyyy"
             aria-label="From date"
-            className="flex-1 sm:flex-initial min-h-[42px] sm:min-h-[38px] px-3 py-1.5 bg-white/90 border border-slate-900/12 rounded-full font-mono"
+            className="flex-1 sm:flex-initial min-w-0 sm:w-[146px] h-[42px] sm:h-[38px] px-3 py-1.5 bg-white/90 border border-slate-900/12 rounded-full font-mono text-xs text-[#111318] placeholder:text-slate-400"
           />
           <span>to</span>
           <input
-            type="date"
+            type={dateTo || dateToFocused ? 'date' : 'text'}
             value={dateTo}
+            onPointerDown={(e) => {
+              e.currentTarget.type = 'date';
+              setDateToFocused(true);
+            }}
+            onFocus={(e) => {
+              e.currentTarget.type = 'date';
+              setDateToFocused(true);
+            }}
+            onBlur={() => setDateToFocused(false)}
             onChange={(e) => setDateTo(e.target.value)}
+            placeholder="dd-mm-yyyy"
             aria-label="To date"
-            className="flex-1 sm:flex-initial min-h-[42px] sm:min-h-[38px] px-3 py-1.5 bg-white/90 border border-slate-900/12 rounded-full font-mono"
+            className="flex-1 sm:flex-initial min-w-0 sm:w-[146px] h-[42px] sm:h-[38px] px-3 py-1.5 bg-white/90 border border-slate-900/12 rounded-full font-mono text-xs text-[#111318] placeholder:text-slate-400"
           />
         </div>
 
@@ -644,8 +659,20 @@ export const TradingHistoryView: React.FC<TradingHistoryViewProps> = ({
                             onClick={() => setScreenshotModalUrl(sc.imageDataUrl)}
                             className="w-full max-h-56 object-contain bg-slate-50 border border-slate-900/10 rounded-xl cursor-pointer"
                           />
-                          <div className="text-[11px] text-slate-500">
-                            Uploaded by {sc.uploadedBy} on {formatDateTime(sc.uploadedAt)}
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                            <span>
+                              Uploaded by {sc.uploadedBy} on {formatDateTime(sc.uploadedAt)}
+                            </span>
+                            {sc.driveUrl && (
+                              <a
+                                href={sc.driveUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-semibold text-[#9F771B] hover:text-[#111318] underline"
+                              >
+                                View in Drive
+                              </a>
+                            )}
                           </div>
                         </div>
                       ))}

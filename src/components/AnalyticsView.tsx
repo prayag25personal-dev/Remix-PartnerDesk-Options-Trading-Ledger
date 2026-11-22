@@ -92,7 +92,7 @@ const InteractiveBarChart: React.FC<{
           const v = maxVal - frac * span;
           return (
             <g key={frac}>
-              <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="rgba(17,19,24,0.06)" strokeWidth="1" />
+              <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="var(--chart-grid)" strokeWidth="1" />
               <text
                 x={padL - 8}
                 y={y + 3}
@@ -111,7 +111,7 @@ const InteractiveBarChart: React.FC<{
           x2={W - padR}
           y1={zeroY}
           y2={zeroY}
-          stroke="rgba(17,19,24,0.22)"
+          stroke="var(--chart-zero)"
           strokeDasharray="3 3"
           strokeWidth="1"
         />
@@ -123,7 +123,7 @@ const InteractiveBarChart: React.FC<{
           const h = Math.max(2, Math.abs(valY - zeroY));
           const fill =
             colorMode === 'OBSIDIAN'
-              ? '#111318'
+              ? 'var(--chart-bar-obsidian)'
               : d.value >= 0
                 ? '#16a34a'
                 : '#dc2626';
@@ -247,7 +247,7 @@ const CumulativeLineChart: React.FC<{
           const v = maxVal - frac * span;
           return (
             <g key={frac}>
-              <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="rgba(17,19,24,0.06)" strokeWidth="1" />
+              <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="var(--chart-grid)" strokeWidth="1" />
               <text
                 x={padL - 8}
                 y={y + 3}
@@ -265,14 +265,14 @@ const CumulativeLineChart: React.FC<{
           x2={W - padR}
           y1={zeroY}
           y2={zeroY}
-          stroke="rgba(17,19,24,0.22)"
+          stroke="var(--chart-zero)"
           strokeDasharray="3 3"
           strokeWidth="1"
         />
 
-        {areaPath && <path d={areaPath} fill="#111318" opacity="0.08" />}
+        {areaPath && <path d={areaPath} fill="var(--chart-line)" opacity="0.08" />}
         {points.length > 1 && (
-          <path d={linePath} fill="none" stroke="#111318" strokeWidth="2.5" strokeLinejoin="round" />
+          <path d={linePath} fill="none" stroke="var(--chart-line)" strokeWidth="2.5" strokeLinejoin="round" />
         )}
 
         {points.map((p, i) => (
@@ -716,7 +716,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ trades }) => {
                 <div className="h-4 bg-slate-900/8 rounded-full overflow-hidden">
                   <div
                     className={`h-full w-1/2 rounded-full ${
-                      partnerSplit.ownerShare >= 0 ? 'bg-[#111318]' : 'bg-rose-600'
+                      partnerSplit.ownerShare >= 0 ? 'bg-[#111318] dark:bg-[#F8FAFC]' : 'bg-rose-600'
                     }`}
                   />
                 </div>

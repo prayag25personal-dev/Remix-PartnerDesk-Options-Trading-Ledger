@@ -2,22 +2,20 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import {
   addDeposit,
+  checkDuplicateScreenshot,
   claimInitialPassword,
-  clearSharedSheetConfig,
   deleteDeposit,
   deleteTradeGroup,
   exportServerBackupPayload,
   getAuthStatus,
   getChargeRates,
   getDashboardSummary,
-  getSharedSheetConfig,
   getStorageInfo,
   listAuditLogs,
   listDeposits,
   listTradeGroups,
   mergeServerBackupPayload,
   saveChargeRates,
-  saveSharedSheetConfig,
   saveUploadedOrders,
   signSessionToken,
   updatePartnerPassword,
@@ -26,6 +24,11 @@ import {
   verifySessionToken,
 } from './db.ts';
 import { extractAngelOneScreenshot } from './gemini.ts';
+import {
+  getGoogleSyncStatus,
+  markSyncPendingAndTrigger,
+  triggerGoogleSync,
+} from './googleSync.ts';
 import type {
   ChargeRates,
   ExtractedOrderLeg,
@@ -78,13 +81,17 @@ export function createApiApp(): express.Express {
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '25mb' }));
 
-  app.get('/api/health', (_req, res) => {
-    const storage = getStorageInfo();
+  app.get('/api/health', async (_req, res) => {
+    const [storage, sync] = await Promise.all([
+      Promise.resolve(getStorageInfo()),
+      getGoogleSyncStatus(),
+    ]);
     res.json({
       ok: true,
       storageMode: 'shared-server',
       dbEngine: storage.engine,
       persistent: storage.persistent,
+      sync,
     });
   });
 
@@ -212,6 +219,16 @@ export function createApiApp(): express.Express {
         match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
       const base64Data = match[2].replace(/\s+/g, '');
 
+      const { duplicate } = await checkDuplicateScreenshot(dataUrl);
+      if (duplicate) {
+        res.status(409).json({
+          error: `Duplicate screenshot detected (already uploaded on ${new Date(
+            duplicate.uploadedAt,
+          ).toLocaleString()} by ${duplicate.uploadedBy}).`,
+        });
+        return;
+      }
+
       try {
         const result = await extractAngelOneScreenshot({ base64Data, mimeType });
         res.json(result);
@@ -314,6 +331,7 @@ export function createApiApp(): express.Express {
           originalFilename,
           orders: cleanOrders,
         });
+        await markSyncPendingAndTrigger();
         res.status(201).json(saved);
       } catch (err) {
         if (err instanceof Error && err.message.startsWith('DUPLICATE_SCREENSHOT:')) {
@@ -345,6 +363,7 @@ export function createApiApp(): express.Express {
           res.status(404).json({ error: 'Trade not found.' });
           return;
         }
+        await markSyncPendingAndTrigger();
         res.json({ trade: updated });
       } catch (err) {
         res.status(400).json({
@@ -368,6 +387,7 @@ export function createApiApp(): express.Express {
         res.status(404).json({ error: 'Trade not found.' });
         return;
       }
+      await markSyncPendingAndTrigger();
       res.json({ ok: true });
     }),
   );
@@ -419,6 +439,7 @@ export function createApiApp(): express.Express {
           referenceNote,
           actor: req.partnerId!,
         });
+        await markSyncPendingAndTrigger();
         res.status(201).json({ deposit });
       } catch (err) {
         res.status(400).json({
@@ -442,6 +463,7 @@ export function createApiApp(): express.Express {
         res.status(404).json({ error: 'Fund entry not found.' });
         return;
       }
+      await markSyncPendingAndTrigger();
       res.json({ ok: true });
     }),
   );
@@ -487,6 +509,7 @@ export function createApiApp(): express.Express {
         req.partnerId!,
         Boolean(req.body?.recalculateExisting),
       );
+      await markSyncPendingAndTrigger();
       res.json({ rates });
     }),
   );
@@ -533,6 +556,7 @@ export function createApiApp(): express.Express {
       }
       try {
         const result = await mergeServerBackupPayload(body, req.partnerId!);
+        await markSyncPendingAndTrigger();
         res.json(result);
       } catch (err) {
         res.status(400).json({
@@ -542,48 +566,23 @@ export function createApiApp(): express.Express {
     }),
   );
 
-  // --- Shared Google Sheet Pointer Routes (Both Prayag & Raj point to the same Sheet) ---
+  // --- Backend Google Sheets & Drive Background Sync Status ---
   app.get(
-    '/api/sheets/config',
+    '/api/sync/status',
     requireAuth,
     asyncHandler(async (_req, res) => {
-      const config = await getSharedSheetConfig();
-      res.json({ config });
+      const status = await getGoogleSyncStatus();
+      res.json({ status });
     }),
   );
 
-  app.put(
-    '/api/sheets/config',
-    requireAuth,
-    asyncHandler(async (req: AuthedRequest, res) => {
-      const spreadsheetId =
-        typeof req.body?.spreadsheetId === 'string' ? req.body.spreadsheetId.trim() : '';
-      const spreadsheetUrl =
-        typeof req.body?.spreadsheetUrl === 'string' ? req.body.spreadsheetUrl.trim() : undefined;
-      const spreadsheetTitle =
-        typeof req.body?.spreadsheetTitle === 'string'
-          ? req.body.spreadsheetTitle.trim()
-          : undefined;
-      if (!/^[a-zA-Z0-9-_]{10,128}$/.test(spreadsheetId)) {
-        res.status(400).json({ error: 'Valid Google Spreadsheet ID is required.' });
-        return;
-      }
-      const config = await saveSharedSheetConfig({
-        spreadsheetId,
-        spreadsheetUrl,
-        spreadsheetTitle,
-        linkedBy: req.partnerId!,
-      });
-      res.json({ config });
-    }),
-  );
-
-  app.delete(
-    '/api/sheets/config',
+  app.post(
+    '/api/sync/now',
     requireAuth,
     asyncHandler(async (_req, res) => {
-      await clearSharedSheetConfig();
-      res.json({ ok: true });
+      await triggerGoogleSync();
+      const status = await getGoogleSyncStatus();
+      res.json({ status });
     }),
   );
 

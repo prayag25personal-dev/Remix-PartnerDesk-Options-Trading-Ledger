@@ -4,9 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createApiApp } from './server/app.ts';
 import { ensureDbReady } from './server/db.ts';
+import { initGoogleSyncOnStartup } from './server/googleSync.ts';
 
 async function startServer() {
   await ensureDbReady();
+  void initGoogleSyncOnStartup();
   const app = createApiApp();
 
   const distDir = path.resolve(process.cwd(), 'dist');
